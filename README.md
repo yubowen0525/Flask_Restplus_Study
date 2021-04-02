@@ -5,6 +5,7 @@ Reference |
 [flask-restplus中文文档](https://github.com/hanerx/flask-restplus-cn-doc) |
 [flask-restplus官方文档](https://flask-restplus.readthedocs.io/en/stable/) | 
 [flask-marshmallow官方文档](https://flask-marshmallow.readthedocs.io/en/latest/) | 
+[marshmallow官方文档](https://marshmallow.readthedocs.io/en/stable/) | 
 
 # 一 flask-restplus
 Reference | 
@@ -378,7 +379,9 @@ api = Api(app, authorizations=authorizations)
 # 二 flask-marshmallow
 [flask-marshmallow官方文档](https://flask-marshmallow.readthedocs.io/en/latest/) 
 
-object -> json
+dumps : object -> json 
+
+loads : json -> object 
 
 ## 2.1 quick start
 Create your app.
@@ -502,3 +505,195 @@ user_schema.dump(user)
     author_schema.dump(author)
     # {'id': 1, 'name': 'Chuck Paluhniuk', 'books': [1]}
     ```
+
+
+# 三 Marshmallow
+[marshmallow官方文档](https://marshmallow.readthedocs.io/en/stable/) 
+
+dumps : object -> json
+loads : json -> object
+
+## 3.1 quick start
+```
+from datetime import date
+from pprint import pprint
+
+from marshmallow import Schema, fields
+
+
+class ArtistSchema(Schema):
+    name = fields.Str()
+
+
+class AlbumSchema(Schema):
+    title = fields.Str()
+    release_date = fields.Date()
+    artist = fields.Nested(ArtistSchema())
+
+
+bowie = dict(name="David Bowie")
+album = dict(artist=bowie, title="Hunky Dory", release_date=date(1971, 12, 17))
+
+schema = AlbumSchema()
+result = schema.dump(album)
+pprint(result, indent=2)
+# { 'artist': {'name': 'David Bowie'},
+#   'release_date': '1971-12-17',
+#   'title': 'Hunky Dory'}
+```
+
+总结下来，marshmallow schema 有三个用处：
+- 校验输入数据
+- 将输入数据反序列化到自定义对象 load
+- 序列化自定义对象至原始的python类型 dump
+
+重要的点：
+1. `fields.Nested()` 解决嵌套object的问题
+2. `Schema.from_dict(
+    {"name": fields.Str(), "email": fields.Email(), "created_at": fields.DateTime()}
+)` 可以使用dict方式创建schema
+   
+3. `schema = UserSchema(only=("name", "email"))   schema.dump(user)`  只会序列化only的field
+4. `@post_load` 在schema.load() 时直接序列化为 自定义object  [demo](./src/schme/marshmallow/test2.py)
+5. `many=True`参数解决可迭代对象
+6. `field.Str(validate=...)` 加入校验器
+7. `requied = True` 为必须存在该字段
+8. `default = 1` 设置缺省值
+9. `dump_only=True` 意味只读在dump时该字段才会使用。 `load_only=True` 意味只写在load时该字段才会使用
+
+## 3.2 定义Schema,用于序列化，反序列化
+```
+class UserSchema(Schema):
+    name = fields.Str()
+    email = fields.Email()
+    created_at = fields.DateTime()
+
+class AlbumSchema(Schema):
+    title = fields.Str()
+    release_date = fields.Date()
+    artist = fields.Nested(ArtistSchema())
+```
+
+## 3.3 validate
+```
+from pprint import pprint
+
+from marshmallow import Schema, fields, validate, ValidationError
+
+
+class UserSchema(Schema):
+    name = fields.Str(validate=validate.Length(min=1))
+    permission = fields.Str(validate=validate.OneOf(["read", "write", "admin"]))
+    age = fields.Int(validate=validate.Range(min=18, max=40))
+
+
+in_data = {"name": "", "permission": "invalid", "age": 71}
+try:
+    UserSchema().load(in_data)
+except ValidationError as err:
+    pprint(err.messages)
+```
+
+也可自己实现校验器
+```
+from marshmallow import Schema, fields, ValidationError
+
+
+def validate_quantity(n):
+    if n < 0:
+        raise ValidationError("Quantity must be greater than 0.")
+    if n > 30:
+        raise ValidationError("Quantity must not be greater than 30.")
+
+
+class ItemSchema(Schema):
+    quantity = fields.Integer(validate=validate_quantity)
+
+
+in_data = {"quantity": 31}
+try:
+    result = ItemSchema().load(in_data)
+except ValidationError as err:
+    print(err.messages)  # => {'quantity': ['Quantity must not be greater than 30.']}
+```
+装饰器注册实现
+```
+class ItemSchema(Schema):
+    quantity = fields.Integer()
+
+    @validates("quantity")
+    def validate_quantity(self, value):
+        if value < 0:
+            raise ValidationError("Quantity must be greater than 0.")
+        if value > 30:
+            raise ValidationError("Quantity must not be greater than 30.")
+```
+
+## 3.4 对于未知字段的行为设定
+- RAISE (default): 若存在未知字段就会出现ValidationError
+
+- EXCLUDE: 排除 未知的字段
+
+- INCLUDE: 接收包括进 未知的字段
+
+设置方式1：
+```
+from marshmallow import Schema, INCLUDE
+
+
+class UserSchema(Schema):
+    class Meta:
+        unknown = INCLUDE
+```
+设置方式2：
+
+`schema = UserSchema(unknown=INCLUDE)`  或者 `UserSchema().load(data, unknown=INCLUDE)`
+
+## 3.5 序列化反序列化改变 字段名
+读时json -> object ，将 email -> emailAddress 。 写时object -> json  将  emailAddress -> email
+```
+class UserSchema(Schema):
+    name = fields.String()
+    email = fields.Email(data_key="emailAddress")
+
+
+s = UserSchema()
+
+data = {"name": "Mike", "email": "foo@bar.com"}
+result = s.dump(data)
+# {'name': u'Mike',
+# 'emailAddress': 'foo@bar.com'}
+
+data = {"name": "Mike", "emailAddress": "foo@bar.com"}
+result = s.load(data)
+# {'name': u'Mike',
+# 'email': 'foo@bar.com'}
+```
+
+### 3.6 维护字段有序
+meta下 ordered = True
+```
+from collections import OrderedDict
+from pprint import pprint
+
+from marshmallow import Schema, fields
+
+
+class UserSchema(Schema):
+    first_name = fields.String()
+    last_name = fields.String()
+    email = fields.Email()
+
+    class Meta:
+        ordered = True
+
+
+u = User("Charlie", "Stones", "charlie@stones.com")
+schema = UserSchema()
+result = schema.dump(u)
+assert isinstance(result, OrderedDict)
+pprint(result, indent=2)
+#  OrderedDict([('first_name', 'Charlie'),
+#              ('last_name', 'Stones'),
+#              ('email', 'charlie@stones.com')])
+```
